@@ -1,4 +1,4 @@
--- phpMyAdmin SQL Dump
+phpMyAdmin SQL Dump
 -- version 5.2.1
 -- https://www.phpmyadmin.net/
 --
@@ -144,8 +144,138 @@ ALTER TABLE `users`
 --
 ALTER TABLE `appointments`
   ADD CONSTRAINT `appointments_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`);
+
+-- =========================================================
+-- TRIGGERS E PROCEDURES ADICIONADOS
+-- =========================================================
+
+DELIMITER $$
+
+-- Trigger: normalizar email e nome antes de inserir usuário
+CREATE TRIGGER `before_insert_users`
+BEFORE INSERT ON `users`
+FOR EACH ROW
+BEGIN
+  SET NEW.email = LOWER(TRIM(NEW.email));
+  SET NEW.full_name = TRIM(NEW.full_name);
+END$$
+
+-- Trigger: normalizar email e nome antes de atualizar usuário
+CREATE TRIGGER `before_update_users`
+BEFORE UPDATE ON `users`
+FOR EACH ROW
+BEGIN
+  SET NEW.email = LOWER(TRIM(NEW.email));
+  SET NEW.full_name = TRIM(NEW.full_name);
+END$$
+
+-- Trigger: garantir status e evitar datas passadas ao inserir appointment
+CREATE TRIGGER `before_insert_appointments`
+BEFORE INSERT ON `appointments`
+FOR EACH ROW
+BEGIN
+  IF NEW.status IS NULL THEN
+    SET NEW.status = 'Agendado';
+  END IF;
+
+  IF NEW.appointment_date < CURDATE() THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'Não é permitido agendar consultas em datas passadas.';
+  END IF;
+END$$
+
+-- Trigger: garantir status e evitar datas passadas ao atualizar appointment
+CREATE TRIGGER `before_update_appointments`
+BEFORE UPDATE ON `appointments`
+FOR EACH ROW
+BEGIN
+  IF NEW.status IS NULL THEN
+    SET NEW.status = 'Agendado';
+  END IF;
+
+  IF NEW.appointment_date < CURDATE() THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'Não é permitido reagendar consultas para datas passadas.';
+  END IF;
+END$$
+
+-- Procedure: criar agendamento com validação de usuário ativo
+CREATE PROCEDURE `sp_create_appointment`(
+    IN p_user_id INT,
+    IN p_service VARCHAR(100),
+    IN p_appointment_date DATE,
+    IN p_appointment_time TIME,
+    IN p_notes TEXT,
+    IN p_patient_address VARCHAR(255),
+    IN p_patient_phone VARCHAR(20)
+)
+BEGIN
+    DECLARE v_user_count INT;
+
+    SELECT COUNT(*)
+      INTO v_user_count
+      FROM users
+     WHERE id = p_user_id
+       AND status = 'active';
+
+    IF v_user_count = 0 THEN
+        SIGNAL SQLSTATE '45000'
+          SET MESSAGE_TEXT = 'Usuário inexistente ou inativo.';
+    END IF;
+
+    INSERT INTO appointments
+        (user_id, service, appointment_date, appointment_time, notes, patient_address, patient_phone)
+    VALUES
+        (p_user_id, p_service, p_appointment_date, p_appointment_time, p_notes, p_patient_address, p_patient_phone);
+END$$
+
+-- Procedure: atualizar status de um agendamento
+CREATE PROCEDURE `sp_update_appointment_status`(
+    IN p_appointment_id INT,
+    IN p_new_status VARCHAR(20)
+)
+BEGIN
+    IF p_new_status NOT IN ('Agendado', 'Completo', 'Cancelado') THEN
+        SIGNAL SQLSTATE '45000'
+          SET MESSAGE_TEXT = 'Status inválido. Use Agendado, Completo ou Cancelado.';
+    END IF;
+
+    UPDATE appointments
+       SET status = p_new_status
+     WHERE id = p_appointment_id;
+
+    IF ROW_COUNT() = 0 THEN
+        SIGNAL SQLSTATE '45000'
+          SET MESSAGE_TEXT = 'Agendamento não encontrado.';
+    END IF;
+END$$
+
+-- Procedure: listar agendamentos de um usuário
+CREATE PROCEDURE `sp_get_user_appointments`(
+    IN p_user_id INT
+)
+BEGIN
+    SELECT 
+        a.id,
+        a.service,
+        a.appointment_date,
+        a.appointment_time,
+        a.status,
+        a.notes,
+        a.patient_address,
+        a.patient_phone,
+        s.price AS service_price
+    FROM appointments a
+    LEFT JOIN services s
+           ON a.service = s.name
+    WHERE a.user_id = p_user_id
+    ORDER BY a.appointment_date, a.appointment_time;
+END$$
+
+DELIMITER ;
+
 COMMIT;
 
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
-/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
